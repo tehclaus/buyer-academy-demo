@@ -6,7 +6,7 @@ program for junior media buyers. It is not a general HR platform — it is a
 focused, fully working demo of a single training workflow, from the daily
 learning plan to the automated status a manager or HR partner would check on.
 
-> **Live demo:** _add your deployed URL here (e.g. Vercel/Netlify) once published._
+**Live demo:** https://buyer-academy-demo.vercel.app/
 
 ## Overview
 
