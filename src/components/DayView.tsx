@@ -4,10 +4,11 @@ import {
   canTakeQuiz,
   getDayProgress,
   isDayCompleted,
+  type ActiveItem,
   type QuizResult,
 } from '../progressEngine';
-import type { DayPlan, ProgressState } from '../types';
-import { PASS_THRESHOLD_PERCENT } from '../types';
+import type { DayPlan, ProgressState, QuizQuestion } from '../types';
+import { PASS_THRESHOLD_PERCENT, isCheckpointAnchorDay, TOTAL_DAYS } from '../types';
 import { Quiz } from './Quiz';
 import { VideoList } from './VideoList';
 
@@ -16,11 +17,11 @@ interface DayViewProps {
   moduleTitle: string;
   progress: ProgressState;
   onToggleVideo: (videoId: string, watched: boolean) => void;
-  onSubmitQuiz: (day: number, answers: number[]) => QuizResult;
-  onGoToDay: (day: number) => void;
+  onSubmitQuiz: (day: number, questions: QuizQuestion[], answers: number[]) => QuizResult;
+  onNavigate: (target: ActiveItem) => void;
 }
 
-export function DayView({ dayPlan, moduleTitle, progress, onToggleVideo, onSubmitQuiz, onGoToDay }: DayViewProps) {
+export function DayView({ dayPlan, moduleTitle, progress, onToggleVideo, onSubmitQuiz, onNavigate }: DayViewProps) {
   const [lastResult, setLastResult] = useState<QuizResult | null>(null);
 
   const dayProgress = getDayProgress(progress, dayPlan.day);
@@ -28,6 +29,8 @@ export function DayView({ dayPlan, moduleTitle, progress, onToggleVideo, onSubmi
   const completed = isDayCompleted(progress, dayPlan.day);
   const quizAvailable = canTakeQuiz(progress, dayPlan.day);
   const watchedCount = dayProgress.watchedVideoIds.length;
+  const isAnchor = isCheckpointAnchorDay(dayPlan.day);
+  const isFinalDay = dayPlan.day === TOTAL_DAYS;
 
   const bestPassedScore = [...dayProgress.attempts].reverse().find((a) => a.passed)?.scorePercent;
 
@@ -35,8 +38,8 @@ export function DayView({ dayPlan, moduleTitle, progress, onToggleVideo, onSubmi
   if (completed) headerBadge = '✓ Завершён';
   else if (editable) headerBadge = 'Текущий день';
 
-  const handleSubmit = (answers: number[]) => {
-    const result = onSubmitQuiz(dayPlan.day, answers);
+  const handleSubmit = (answers: number[], shuffledQuestions: QuizQuestion[]) => {
+    const result = onSubmitQuiz(dayPlan.day, shuffledQuestions, answers);
     setLastResult(result);
   };
 
@@ -72,14 +75,34 @@ export function DayView({ dayPlan, moduleTitle, progress, onToggleVideo, onSubmi
           <p>
             Отличный результат: <strong>{lastResult.scorePercent}%</strong>! День {dayPlan.day} завершён.
           </p>
-          {dayPlan.day < 20 ? (
-            <button type="button" className="btn btn-primary" onClick={() => onGoToDay(dayPlan.day + 1)}>
+          {isAnchor && (
+            <>
+              <p>Впереди — контрольная неделя по материалам последних 5 дней, прежде чем откроется следующий модуль.</p>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => onNavigate({ type: 'checkpoint', anchorDay: dayPlan.day })}
+              >
+                Перейти к контрольной неделе
+              </button>
+            </>
+          )}
+          {isFinalDay && (
+            <>
+              <p>Впереди — финальная сертификация: теория по всему курсу и практический кейс.</p>
+              <button type="button" className="btn btn-primary" onClick={() => onNavigate({ type: 'certification' })}>
+                Перейти к финальной сертификации
+              </button>
+            </>
+          )}
+          {!isAnchor && !isFinalDay && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => onNavigate({ type: 'day', day: dayPlan.day + 1 })}
+            >
               Перейти к дню {dayPlan.day + 1}
             </button>
-          ) : (
-            <p>
-              <strong>Поздравляем! Программа обучения полностью завершена.</strong>
-            </p>
           )}
         </div>
       )}
@@ -100,7 +123,7 @@ export function DayView({ dayPlan, moduleTitle, progress, onToggleVideo, onSubmi
 
       <section aria-labelledby="quiz-heading" className="day-view__quiz-section">
         <div className="section-heading">
-          <h3 id="quiz-heading">Тест дня</h3>
+          <h3 id="quiz-heading">Тест дня (10 вопросов)</h3>
         </div>
         {completed && bestPassedScore !== undefined && (
           <p className="day-view__quiz-status">Тест пройден. Лучший результат: {bestPassedScore}%.</p>

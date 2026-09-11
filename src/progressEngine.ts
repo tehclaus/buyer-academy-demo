@@ -1,6 +1,23 @@
-import { getDayPlan } from './data/curriculum';
-import { PASS_THRESHOLD_PERCENT, TOTAL_DAYS } from './types';
-import type { DayProgress, ProgressState, QuizAttempt } from './types';
+import { gradePracticalCase } from './data/practicalCase';
+import { getAllQuizQuestions, getDayPlan, getQuestionPoolForDayRange } from './data/curriculum';
+import {
+  CERTIFICATION_DAY,
+  CHECKPOINT_ANCHOR_DAYS,
+  CHECKPOINT_SPAN_DAYS,
+  PASS_THRESHOLD_PERCENT,
+  TOTAL_DAYS,
+  isCheckpointAnchorDay,
+} from './types';
+import type {
+  CertificationProgress,
+  CheckpointProgress,
+  DayProgress,
+  PracticalCaseAnswer,
+  PracticalCaseResult,
+  ProgressState,
+  QuizAttempt,
+  QuizQuestion,
+} from './types';
 
 export function getDayProgress(state: ProgressState, day: number): DayProgress {
   return (
@@ -13,6 +30,10 @@ export function getDayProgress(state: ProgressState, day: number): DayProgress {
   );
 }
 
+export function getCheckpointProgress(state: ProgressState, anchorDay: number): CheckpointProgress {
+  return state.checkpoints[anchorDay] ?? { anchorDay, attempts: [], completed: false };
+}
+
 export function isDayUnlocked(state: ProgressState, day: number): boolean {
   return day <= state.unlockedDay;
 }
@@ -21,13 +42,36 @@ export function isDayCompleted(state: ProgressState, day: number): boolean {
   return Boolean(state.days[day]?.completed);
 }
 
-/** The day the learner is currently working through (editable). */
-export function getActiveDay(state: ProgressState): number {
-  return state.unlockedDay;
+export function isCheckpointCompleted(state: ProgressState, anchorDay: number): boolean {
+  return Boolean(state.checkpoints[anchorDay]?.completed);
 }
 
 export function isProgramCompleted(state: ProgressState): boolean {
-  return state.unlockedDay >= TOTAL_DAYS && isDayCompleted(state, TOTAL_DAYS);
+  return state.certification.completed;
+}
+
+/** What the learner should be doing right now: a day's content, a pending checkpoint, the final certification, or nothing (done). */
+export type ActiveItem =
+  | { type: 'day'; day: number }
+  | { type: 'checkpoint'; anchorDay: number }
+  | { type: 'certification' }
+  | { type: 'done' };
+
+export function getActiveItem(state: ProgressState): ActiveItem {
+  for (const anchorDay of CHECKPOINT_ANCHOR_DAYS) {
+    if (isDayCompleted(state, anchorDay) && !isCheckpointCompleted(state, anchorDay)) {
+      return { type: 'checkpoint', anchorDay };
+    }
+  }
+  if (isDayCompleted(state, CERTIFICATION_DAY)) {
+    return state.certification.completed ? { type: 'done' } : { type: 'certification' };
+  }
+  return { type: 'day', day: state.unlockedDay };
+}
+
+export function canEditDay(state: ProgressState, day: number): boolean {
+  const active = getActiveItem(state);
+  return active.type === 'day' && active.day === day;
 }
 
 export function isVideoWatched(state: ProgressState, day: number, videoId: string): boolean {
@@ -42,11 +86,7 @@ export function allVideosWatched(state: ProgressState, day: number): boolean {
 }
 
 export function canTakeQuiz(state: ProgressState, day: number): boolean {
-  return day === getActiveDay(state) && !isDayCompleted(state, day) && allVideosWatched(state, day);
-}
-
-export function canEditDay(state: ProgressState, day: number): boolean {
-  return day === getActiveDay(state) && !isDayCompleted(state, day);
+  return canEditDay(state, day) && !isDayCompleted(state, day) && allVideosWatched(state, day);
 }
 
 export function setVideoWatched(
@@ -69,51 +109,114 @@ export function setVideoWatched(
   return { ...state, days: { ...state.days, [day]: updatedDay } };
 }
 
+// ---------- Checkpoints ----------
+
+/** [startDay, endDay] inclusive range of days a checkpoint covers. */
+export function getCheckpointDayRange(anchorDay: number): [number, number] {
+  return [anchorDay - CHECKPOINT_SPAN_DAYS + 1, anchorDay];
+}
+
+/** The pool checkpoint questions are sampled from — reuses the daily question bank, no separate question set. */
+export function getCheckpointPool(anchorDay: number): QuizQuestion[] {
+  const [start, end] = getCheckpointDayRange(anchorDay);
+  return getQuestionPoolForDayRange(start, end);
+}
+
+export function canTakeCheckpoint(state: ProgressState, anchorDay: number): boolean {
+  const active = getActiveItem(state);
+  return active.type === 'checkpoint' && active.anchorDay === anchorDay;
+}
+
+// ---------- Certification ----------
+
+/** The pool the day-20 certification theory section samples from — the full 200-question course bank. */
+export function getCertificationPool(): QuizQuestion[] {
+  return getAllQuizQuestions();
+}
+
+export function canTakeCertificationTheory(state: ProgressState): boolean {
+  const active = getActiveItem(state);
+  return active.type === 'certification' && !state.certification.theoryPassed;
+}
+
+export function canTakeCertificationPractical(state: ProgressState): boolean {
+  const active = getActiveItem(state);
+  return active.type === 'certification' && state.certification.theoryPassed && !state.certification.practicalPassed;
+}
+
+// ---------- Scoring ----------
+
 export interface QuizResult {
   scorePercent: number;
   correctCount: number;
   totalQuestions: number;
   passed: boolean;
+  /** Unique video ids to review, derived from incorrectly answered questions. */
   reviewVideoIds: string[];
+  /** Unique source days of incorrectly answered questions — the "weak topics" for this attempt. */
+  weakDays: number[];
 }
 
-export function submitQuizAnswers(
-  state: ProgressState,
-  day: number,
+export function scoreQuiz(
+  questions: QuizQuestion[],
   answers: number[],
-): { state: ProgressState; result: QuizResult } {
-  const plan = getDayPlan(day);
-  if (!plan) throw new Error(`Unknown day ${day}`);
-
-  const reviewVideoIds: string[] = [];
+  passThresholdPercent: number = PASS_THRESHOLD_PERCENT,
+): QuizResult {
+  const reviewVideoIds = new Set<string>();
+  const weakDays = new Set<number>();
   let correctCount = 0;
-  plan.quiz.forEach((q, i) => {
+
+  questions.forEach((q, i) => {
     if (answers[i] === q.correctIndex) {
       correctCount += 1;
     } else {
-      reviewVideoIds.push(q.reviewVideoId);
+      reviewVideoIds.add(q.reviewVideoId);
+      weakDays.add(q.sourceDay);
     }
   });
 
-  const totalQuestions = plan.quiz.length;
-  const scorePercent = Math.round((correctCount / totalQuestions) * 100);
-  const passed = scorePercent >= PASS_THRESHOLD_PERCENT;
-  const now = new Date().toISOString();
+  const totalQuestions = questions.length;
+  const scorePercent = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
+  const passed = scorePercent >= passThresholdPercent;
 
-  const attempt: QuizAttempt = {
-    timestamp: now,
-    answers,
-    correctCount,
+  return {
     scorePercent,
+    correctCount,
+    totalQuestions,
     passed,
+    reviewVideoIds: Array.from(reviewVideoIds),
+    weakDays: Array.from(weakDays).sort((a, b) => a - b),
   };
+}
+
+function toAttempt(result: QuizResult, answers: number[], timestamp: string): QuizAttempt {
+  return {
+    timestamp,
+    answers,
+    correctCount: result.correctCount,
+    totalQuestions: result.totalQuestions,
+    scorePercent: result.scorePercent,
+    passed: result.passed,
+  };
+}
+
+/** Submit a regular daily quiz (10 questions). `questions` must be the exact (possibly shuffled) set shown to the learner. */
+export function submitDayQuiz(
+  state: ProgressState,
+  day: number,
+  questions: QuizQuestion[],
+  answers: number[],
+): { state: ProgressState; result: QuizResult } {
+  const result = scoreQuiz(questions, answers);
+  const now = new Date().toISOString();
+  const attempt = toAttempt(result, answers, now);
 
   const progress = getDayProgress(state, day);
   const attempts = [...progress.attempts, attempt];
 
   let watchedVideoIds = progress.watchedVideoIds;
-  if (!passed) {
-    const toReview = new Set(reviewVideoIds);
+  if (!result.passed) {
+    const toReview = new Set(result.reviewVideoIds);
     watchedVideoIds = watchedVideoIds.filter((id) => !toReview.has(id));
   }
 
@@ -121,35 +224,129 @@ export function submitQuizAnswers(
     ...progress,
     attempts,
     watchedVideoIds,
-    completed: passed,
-    completedAt: passed ? now : progress.completedAt,
+    completed: result.passed,
+    completedAt: result.passed ? now : progress.completedAt,
   };
 
-  const nextUnlockedDay = passed ? Math.min(day + 1, TOTAL_DAYS) : state.unlockedDay;
+  let unlockedDay = state.unlockedDay;
+  if (result.passed && day < TOTAL_DAYS && !isCheckpointAnchorDay(day)) {
+    unlockedDay = Math.max(unlockedDay, Math.min(day + 1, TOTAL_DAYS));
+  }
+  // If `day` is a checkpoint anchor (5/10/15) or the final day (20), unlockedDay
+  // intentionally does not advance — getActiveItem() routes to the checkpoint
+  // or certification instead until it is passed.
+
+  const newState: ProgressState = { ...state, unlockedDay, days: { ...state.days, [day]: updatedDay } };
+  return { state: newState, result };
+}
+
+/** Submit a weekly checkpoint (25 questions sampled from the preceding 5 days). */
+export function submitCheckpoint(
+  state: ProgressState,
+  anchorDay: number,
+  questions: QuizQuestion[],
+  answers: number[],
+): { state: ProgressState; result: QuizResult } {
+  const result = scoreQuiz(questions, answers);
+  const now = new Date().toISOString();
+  const attempt = toAttempt(result, answers, now);
+
+  const progress = getCheckpointProgress(state, anchorDay);
+  const attempts = [...progress.attempts, attempt];
+  const passedNow = result.passed || progress.completed;
+
+  const updatedCheckpoint: CheckpointProgress = {
+    ...progress,
+    attempts,
+    completed: passedNow,
+    completedAt: result.passed ? now : progress.completedAt,
+  };
+
+  let unlockedDay = state.unlockedDay;
+  if (result.passed) {
+    unlockedDay = Math.max(unlockedDay, Math.min(anchorDay + 1, TOTAL_DAYS));
+  }
 
   const newState: ProgressState = {
     ...state,
-    unlockedDay: Math.max(state.unlockedDay, nextUnlockedDay),
-    days: { ...state.days, [day]: updatedDay },
+    unlockedDay,
+    checkpoints: { ...state.checkpoints, [anchorDay]: updatedCheckpoint },
+  };
+  return { state: newState, result };
+}
+
+/** Submit the day-20 certification theory section (40 questions sampled from the full course). */
+export function submitCertificationTheory(
+  state: ProgressState,
+  questions: QuizQuestion[],
+  answers: number[],
+): { state: ProgressState; result: QuizResult } {
+  const result = scoreQuiz(questions, answers);
+  const now = new Date().toISOString();
+  const attempt = toAttempt(result, answers, now);
+
+  const theoryAttempts = [...state.certification.theoryAttempts, attempt];
+  const theoryPassed = result.passed || state.certification.theoryPassed;
+  const completed = theoryPassed && state.certification.practicalPassed;
+
+  const updatedCertification: CertificationProgress = {
+    ...state.certification,
+    theoryAttempts,
+    theoryPassed,
+    completed,
+    completedAt: completed ? now : state.certification.completedAt,
   };
 
-  return {
-    state: newState,
-    result: { scorePercent, correctCount, totalQuestions, passed, reviewVideoIds },
-  };
+  return { state: { ...state, certification: updatedCertification }, result };
 }
+
+/** Submit the practical campaign case. Both this and the theory quiz must pass to finish the program. */
+export function submitPracticalCase(
+  state: ProgressState,
+  answer: PracticalCaseAnswer,
+): { state: ProgressState; result: PracticalCaseResult } {
+  const result = gradePracticalCase(answer);
+  const now = new Date().toISOString();
+
+  const practicalAttempts = [...state.certification.practicalAttempts, { timestamp: now, answer, result }];
+  const practicalPassed = result.passed || state.certification.practicalPassed;
+  const completed = state.certification.theoryPassed && practicalPassed;
+
+  const updatedCertification: CertificationProgress = {
+    ...state.certification,
+    practicalAttempts,
+    practicalPassed,
+    completed,
+    completedAt: completed ? now : state.certification.completedAt,
+  };
+
+  return { state: { ...state, certification: updatedCertification }, result };
+}
+
+// ---------- Status summary ----------
 
 export interface StatusSummary {
   employeeName: string;
-  currentDay: number;
+  activeItem: ActiveItem;
   totalDays: number;
   daysCompleted: number;
   videosWatched: number;
   totalVideos: number;
   averageScorePercent: number | null;
-  attemptsOnCurrentDay: number;
+  attemptsOnCurrentItem: number;
   needsAttention: boolean;
   programCompleted: boolean;
+}
+
+function attemptsForActiveItem(state: ProgressState, active: ActiveItem): number {
+  if (active.type === 'day') return state.days[active.day]?.attempts.length ?? 0;
+  if (active.type === 'checkpoint') return state.checkpoints[active.anchorDay]?.attempts.length ?? 0;
+  if (active.type === 'certification') {
+    return state.certification.theoryPassed
+      ? state.certification.practicalAttempts.length
+      : state.certification.theoryAttempts.length;
+  }
+  return 0;
 }
 
 export function computeStatusSummary(state: ProgressState): StatusSummary {
@@ -178,20 +375,20 @@ export function computeStatusSummary(state: ProgressState): StatusSummary {
     }
   }
 
-  const activeDay = getActiveDay(state);
-  const attemptsOnCurrentDay = state.days[activeDay]?.attempts.length ?? 0;
+  const activeItem = getActiveItem(state);
+  const attemptsOnCurrentItem = attemptsForActiveItem(state, activeItem);
   const programCompleted = isProgramCompleted(state);
 
   return {
     employeeName: state.employeeName,
-    currentDay: activeDay,
+    activeItem,
     totalDays: TOTAL_DAYS,
     daysCompleted,
     videosWatched,
     totalVideos,
     averageScorePercent: scoreCount > 0 ? Math.round(scoreSum / scoreCount) : null,
-    attemptsOnCurrentDay,
-    needsAttention: !programCompleted && attemptsOnCurrentDay >= 2,
+    attemptsOnCurrentItem,
+    needsAttention: !programCompleted && attemptsOnCurrentItem >= 2,
     programCompleted,
   };
 }

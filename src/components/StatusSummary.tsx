@@ -4,6 +4,22 @@ interface StatusSummaryProps {
   summary: StatusSummaryData;
 }
 
+function activeItemLabel(summary: StatusSummaryData): string {
+  const { activeItem, totalDays } = summary;
+  switch (activeItem.type) {
+    case 'day':
+      return `День ${activeItem.day} / ${totalDays}`;
+    case 'checkpoint':
+      return `Контрольная неделя (после дня ${activeItem.anchorDay})`;
+    case 'certification':
+      return 'Финальная сертификация';
+    case 'done':
+      return 'Программа завершена';
+    default:
+      return '—';
+  }
+}
+
 /**
  * Concise automated status a manager or HR partner would glance at —
  * intentionally not a full analytics dashboard, just the facts needed to
@@ -32,10 +48,8 @@ export function StatusSummary({ summary }: StatusSummaryProps) {
       </div>
       <dl className="status-summary__grid">
         <div className="status-metric">
-          <dt>Текущий день</dt>
-          <dd>
-            {summary.currentDay} / {summary.totalDays}
-          </dd>
+          <dt>Текущий этап</dt>
+          <dd>{activeItemLabel(summary)}</dd>
         </div>
         <div className="status-metric">
           <dt>Дней завершено</dt>
@@ -50,12 +64,12 @@ export function StatusSummary({ summary }: StatusSummaryProps) {
           </dd>
         </div>
         <div className="status-metric">
-          <dt>Средний балл за тесты</dt>
+          <dt>Средний балл за дневные тесты</dt>
           <dd>{summary.averageScorePercent !== null ? `${summary.averageScorePercent}%` : '—'}</dd>
         </div>
         <div className="status-metric">
-          <dt>Попыток на текущий день</dt>
-          <dd>{summary.attemptsOnCurrentDay}</dd>
+          <dt>Попыток на текущем этапе</dt>
+          <dd>{summary.attemptsOnCurrentItem}</dd>
         </div>
       </dl>
     </section>

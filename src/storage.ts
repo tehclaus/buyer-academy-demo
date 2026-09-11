@@ -1,8 +1,21 @@
-import type { ProgressState } from './types';
+import type { CertificationProgress, ProgressState } from './types';
 
-const STORAGE_KEY = 'buyer-academy:progress:v1';
+// Bumped from v1: progress now includes weekly checkpoints and the final
+// certification. Old v1 data is intentionally not migrated — an unrecognized
+// shape simply falls back to a fresh start (see loadProgress below).
+const STORAGE_KEY = 'buyer-academy:progress:v2';
 
 export const DEMO_EMPLOYEE_NAME = 'Анна Смирнова (демо-стажёр)';
+
+function createEmptyCertification(): CertificationProgress {
+  return {
+    theoryAttempts: [],
+    theoryPassed: false,
+    practicalAttempts: [],
+    practicalPassed: false,
+    completed: false,
+  };
+}
 
 export function createInitialProgress(): ProgressState {
   return {
@@ -10,6 +23,8 @@ export function createInitialProgress(): ProgressState {
     employeeName: DEMO_EMPLOYEE_NAME,
     startDate: new Date().toISOString(),
     days: {},
+    checkpoints: {},
+    certification: createEmptyCertification(),
   };
 }
 
@@ -18,7 +33,13 @@ export function loadProgress(): ProgressState {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return createInitialProgress();
     const parsed = JSON.parse(raw) as ProgressState;
-    if (!parsed || typeof parsed.unlockedDay !== 'number' || typeof parsed.days !== 'object') {
+    if (
+      !parsed ||
+      typeof parsed.unlockedDay !== 'number' ||
+      typeof parsed.days !== 'object' ||
+      typeof parsed.checkpoints !== 'object' ||
+      typeof parsed.certification !== 'object'
+    ) {
       return createInitialProgress();
     }
     return parsed;

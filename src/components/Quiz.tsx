@@ -1,15 +1,22 @@
 import { useState } from 'react';
+import { prepareAttempt } from '../quizSampling';
 import type { QuizQuestion } from '../types';
 
 interface QuizProps {
   questions: QuizQuestion[];
-  onSubmit: (answers: number[]) => void;
+  /** Called with the learner's answers and the exact (shuffled) question set they were shown, so the caller can score correctly. */
+  onSubmit: (answers: number[], shuffledQuestions: QuizQuestion[]) => void;
+  ariaLabel?: string;
 }
 
-export function Quiz({ questions, onSubmit }: QuizProps) {
-  const [answers, setAnswers] = useState<Array<number | null>>(() => questions.map(() => null));
+export function Quiz({ questions, onSubmit, ariaLabel = 'Тест по материалам дня' }: QuizProps) {
+  // Randomized once per mount (i.e. once per attempt — parents remount this
+  // component via `key` between attempts so order reshuffles every time).
+  const [shuffledQuestions] = useState<QuizQuestion[]>(() => prepareAttempt(questions));
+  const [answers, setAnswers] = useState<Array<number | null>>(() => shuffledQuestions.map(() => null));
 
   const allAnswered = answers.every((a) => a !== null);
+  const answeredCount = answers.filter((a) => a !== null).length;
 
   const handleSelect = (questionIndex: number, optionIndex: number) => {
     setAnswers((prev) => {
@@ -21,13 +28,13 @@ export function Quiz({ questions, onSubmit }: QuizProps) {
 
   const handleSubmit = () => {
     if (!allAnswered) return;
-    onSubmit(answers as number[]);
+    onSubmit(answers as number[], shuffledQuestions);
   };
 
   return (
-    <div className="quiz" aria-label="Тест по материалам дня">
+    <div className="quiz" aria-label={ariaLabel}>
       <ol className="quiz__list">
-        {questions.map((q, qIndex) => (
+        {shuffledQuestions.map((q, qIndex) => (
           <li key={q.id} className="quiz__question">
             <fieldset>
               <legend className="quiz__question-text">
@@ -59,7 +66,7 @@ export function Quiz({ questions, onSubmit }: QuizProps) {
       </button>
       {!allAnswered && (
         <p className="quiz__hint" role="status">
-          Ответьте на все {questions.length} вопросов, чтобы отправить тест.
+          Отвечено {answeredCount} из {shuffledQuestions.length}. Ответьте на все вопросы, чтобы отправить тест.
         </p>
       )}
     </div>
